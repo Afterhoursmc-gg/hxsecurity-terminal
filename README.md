@@ -10,7 +10,9 @@ It is designed for owned/authorized training targets only. It is not a general i
 
 Full lab automation for registered HXSecurity tests.
 
-Locked unless the operator provides an admin key hash:
+Enter the issued admin access code when prompted. The public `.py` validates admin access server-side, so the access code/hash is not stored in GitHub.
+
+Optional self-hosted/operator override:
 
 ```bash
 export HXSECURITY_ADMIN_KEY_SHA256="<sha256-of-your-admin-key>"

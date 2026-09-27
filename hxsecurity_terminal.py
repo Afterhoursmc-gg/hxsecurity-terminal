@@ -16,6 +16,7 @@ import base64
 import getpass
 import hashlib
 import http.cookiejar
+import json
 import os
 import re
 import ssl
@@ -29,8 +30,9 @@ from typing import Iterable, Optional
 
 # Public-safe default: Admin is locked unless a key hash is provided by env.
 LOCAL_DEFAULT_ADMIN_CODE_SHA256 = ""
-USER_AGENT = "curl/8.0 HXSecurity-Terminal/0.2"
+USER_AGENT = "curl/8.0 HXSecurity-Terminal/0.3"
 REQUEST_TIMEOUT = 10
+ADMIN_VERIFY_URL = os.environ.get("HXSECURITY_ADMIN_VERIFY_URL", "https://lab.hxsecurity.net/api/terminal/admin/verify")
 
 ALLOWED_HOSTS = {
     "lab.hxsecurity.net",
@@ -231,14 +233,32 @@ def assert_allowed_target(base_url: str) -> None:
     raise SystemExit(f"Refusing target outside authorized lab allowlist: {host}")
 
 
-def check_admin_code() -> bool:
-    expected = os.environ.get("HXSECURITY_ADMIN_KEY_SHA256")
-    if not expected:
-        print("Admin plan is locked: set HXSECURITY_ADMIN_KEY_SHA256 to enable it.")
+def verify_remote_admin_code(code: str) -> bool:
+    if not ADMIN_VERIFY_URL:
         return False
+    data = urllib.parse.urlencode({"code": code}).encode()
+    req = urllib.request.Request(
+        ADMIN_VERIFY_URL,
+        data=data,
+        method="POST",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+            return int(resp.status) == 200 and body.get("ok") is True and body.get("plan") == "admin"
+    except Exception:
+        return False
+
+
+def check_admin_code() -> bool:
     code = getpass.getpass("ADMIN ACCESS CODE: ")
-    digest = hashlib.sha256(code.encode()).hexdigest()
-    return digest == expected
+    expected = os.environ.get("HXSECURITY_ADMIN_KEY_SHA256")
+    if expected:
+        digest = hashlib.sha256(code.encode()).hexdigest()
+        if digest == expected:
+            return True
+    return verify_remote_admin_code(code)
 
 
 def check_premium_code() -> bool:
@@ -251,9 +271,18 @@ def check_premium_code() -> bool:
     return digest == expected
 
 
+def pause_before_exit() -> None:
+    if sys.stdin.isatty():
+        try:
+            input("\nPress Enter to exit...")
+        except EOFError:
+            pass
+
+
 def premium_menu() -> None:
     if not check_premium_code():
         print("Access denied.")
+        pause_before_exit()
         raise SystemExit(1)
     print("\nPREMIUM PLAN - $9.99/month")
     print("- guided hints")
@@ -269,6 +298,7 @@ def premium_menu() -> None:
 def admin_menu() -> None:
     if not check_admin_code():
         print("Access denied.")
+        pause_before_exit()
         raise SystemExit(1)
     term = HXTerminal()
     while True:
@@ -307,6 +337,7 @@ def main() -> None:
         return
     else:
         print("Unknown choice.")
+        pause_before_exit()
         raise SystemExit(1)
 
 

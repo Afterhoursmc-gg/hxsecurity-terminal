@@ -1,0 +1,73 @@
+# HXSecurity Terminal
+
+A consent-first local Python terminal for controlled H0RII/HXSecurity CTF labs.
+
+It is designed for owned/authorized training targets only. It is not a general internet scanner.
+
+## Plans
+
+### ADMIN PLAN
+
+Full lab automation for registered HXSecurity tests.
+
+Locked unless the operator provides an admin key hash:
+
+```bash
+export HXSECURITY_ADMIN_KEY_SHA256="<sha256-of-your-admin-key>"
+python3 hxsecurity_terminal.py
+```
+
+### PREMIUM PLAN — $9.99/month
+
+Guided/manual mode.
+
+Locked unless a premium key hash is issued:
+
+```bash
+export HXSECURITY_PREMIUM_KEY_SHA256="<sha256-of-premium-key>"
+python3 hxsecurity_terminal.py
+```
+
+No premium access keys are included in this repository.
+
+## Current registered tests
+
+### Test 1
+
+Automates the same authorized flow used in HXSecurity Test 1:
+
+1. Ask for a lab URL/domain.
+2. Enumerate realistic backup/config filenames.
+3. Use a normal User-Agent so Cloudflare does not block the lab workflow.
+4. Detect a Base64 credential marker.
+5. Decode locally.
+6. Login as `admin`.
+7. Confirm the success banner.
+
+## Run
+
+```bash
+python3 hxsecurity_terminal.py
+```
+
+## Safety scope
+
+Allowed target allowlist is restricted in code to:
+
+- `hxsecurity.net`
+- `*.hxsecurity.net`
+- `*.horii.dev`
+- localhost
+
+Do not use this tool against third-party systems.
+
+## Creating a key hash
+
+```bash
+python3 - <<'PY'
+import hashlib, getpass
+print(hashlib.sha256(getpass.getpass('key: ').encode()).hexdigest())
+PY
+```
+
+Then export the resulting hash as one of the environment variables above.

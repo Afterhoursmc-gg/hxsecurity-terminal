@@ -46,6 +46,18 @@ Automates the same authorized flow used in HXSecurity Test 1:
 6. Login as `admin`.
 7. Confirm the success banner.
 
+### Test 2
+
+Automates HXSecurity Test 2:
+
+1. Ask for a lab URL/domain.
+2. Trace a chained web-enumeration clue path.
+3. Use login headers, robots metadata and a release manifest.
+4. Recover a Base64 credential marker from the final lab artifact.
+5. Decode locally.
+6. Login as `admin`.
+7. Confirm the Test 2 success banner.
+
 ## Run
 
 ```bash

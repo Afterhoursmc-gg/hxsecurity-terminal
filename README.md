@@ -69,6 +69,21 @@ Automates HXSecurity Test 3:
 5. Login as `admin`.
 6. Confirm the Test 3 success banner.
 
+### Test 4
+
+Automates HXSecurity Test 4:
+
+1. Ask for a lab URL/domain.
+2. Trace a sitemap/status/manifest archived-env clue path.
+3. Recover a Base64 credential marker from the final lab artifact.
+4. Decode locally.
+5. Login as `admin`.
+6. Confirm the Test 4 success banner.
+
+## Auto-update
+
+From v0.4.0 onward, Admin mode checks GitHub Releases for the latest `hxsecurity_terminal.py`. Use menu option `5) Check/install terminal update` to replace the current script safely. A backup of the previous file is kept next to the script.
+
 ## Run
 
 ```bash

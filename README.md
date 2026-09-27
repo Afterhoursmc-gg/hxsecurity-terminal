@@ -80,9 +80,19 @@ Automates HXSecurity Test 4:
 5. Login as `admin`.
 6. Confirm the Test 4 success banner.
 
+### Test 5
+
+Automates HXSecurity Test 5:
+
+1. Ask for a lab URL/domain.
+2. Trace a public app JS/source-map clue.
+3. Enumerate a bounded object ID range.
+4. Recover an unauthorized admin object and validation token.
+5. Validate the BOLA/IDOR success condition.
+
 ## Auto-update
 
-From v0.4.0 onward, Admin mode checks GitHub Releases for the latest `hxsecurity_terminal.py`. Use menu option `5) Check/install terminal update` to replace the current script safely. A backup of the previous file is kept next to the script.
+From v0.4.0 onward, Admin mode checks GitHub Releases for the latest `hxsecurity_terminal.py`. From v0.5.0 onward, Admin mode can also enable HXSecurity Protector live alerts and handles observe-mode soft 403/429 with bounded retries. Use menu option `5) Check/install terminal update` to replace the current script safely. A backup of the previous file is kept next to the script.
 
 ## Run
 

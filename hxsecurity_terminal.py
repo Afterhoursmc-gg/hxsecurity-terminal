@@ -32,8 +32,8 @@ from typing import Iterable, Optional
 
 # Public-safe default: Admin is locked unless a key hash is provided by env.
 LOCAL_DEFAULT_ADMIN_CODE_SHA256 = ""
-CURRENT_VERSION = "v0.5.0"
-USER_AGENT = "curl/8.0 HXSecurity-Terminal/0.5"
+CURRENT_VERSION = "v0.6.0"
+USER_AGENT = "curl/8.0 HXSecurity-Terminal/0.6"
 RELEASE_API_URL = "https://api.github.com/repos/Afterhoursmc-gg/hxsecurity-terminal/releases/latest"
 REQUEST_TIMEOUT = 10
 ADMIN_VERIFY_URL = os.environ.get("HXSECURITY_ADMIN_VERIFY_URL", "https://lab.hxsecurity.net/api/terminal/admin/verify")
@@ -119,6 +119,7 @@ class HXTerminal:
         self.context = ssl.create_default_context()
         self.protector_notify = protector_notify
         self.protector_seen = False
+        self.protector_event_ids: list[str] = []
 
     def request_once(self, url: str, *, method: str = "GET", data: Optional[bytes] = None) -> HttpResult:
         headers = {
@@ -163,6 +164,9 @@ class HXTerminal:
             resistance = (header_get(res.headers, "x-hx-resistance") or "none").lower()
             risk = header_get(res.headers, "x-hx-risk") or "low"
             event = header_get(res.headers, "x-hx-event-id") or ""
+            if event:
+                self.protector_event_ids.append(event)
+                self.protector_event_ids = self.protector_event_ids[-40:]
             if resistance not in {"none", ""} or res.status in {403, 429}:
                 print(f"[protector] resistance detected event={event} risk={risk} response={res.status} resistance={resistance}")
 
@@ -171,6 +175,59 @@ class HXTerminal:
         if res.status != 200:
             raise RuntimeError(f"HTTP {res.status} from {url}")
         return json.loads(res.text)
+
+    def post_json(self, url: str, payload: dict) -> HttpResult:
+        data = json.dumps(payload).encode()
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        if self.protector_notify:
+            headers["X-HX-Protector-Notify"] = "1"
+        req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+        try:
+            with self.opener.open(req, timeout=REQUEST_TIMEOUT) as resp:
+                return HttpResult(url, int(resp.status), resp.read(), resp.headers)
+        except urllib.error.HTTPError as e:
+            return HttpResult(url, int(e.code), e.read(), e.headers)
+
+    def print_security_report(self, report: dict) -> None:
+        print("\n=== HXSecurity Finding Report ===")
+        for key in ["vulnerability", "affectedEndpoint", "severity", "technique", "databaseInteractionConfirmed", "sensitiveTestDataExposed", "responseStatus", "result"]:
+            if key in report:
+                label = {
+                    "vulnerability": "Vulnerability",
+                    "affectedEndpoint": "Affected endpoint",
+                    "severity": "Severity",
+                    "technique": "Technique detected",
+                    "databaseInteractionConfirmed": "Database interaction confirmed",
+                    "sensitiveTestDataExposed": "Sensitive test data exposed",
+                    "responseStatus": "Response/status",
+                    "result": "Result",
+                }[key]
+                print(f"{label}: {report[key]}")
+        if report.get("evidence"):
+            print("Evidence:")
+            for item in report["evidence"]:
+                print(f"- {item}")
+        if report.get("protectorEvents"):
+            print("Protector events: " + ", ".join(report["protectorEvents"][-10:]))
+        print("=== End Report ===\n")
+
+    def submit_module_result(self, base_url: str, report: dict) -> Optional[str]:
+        try:
+            url = urllib.parse.urljoin(base_url.rstrip("/") + "/", "api/protector/results")
+            res = self.post_json(url, report)
+            if res.status == 200:
+                body = json.loads(res.text)
+                event_id = body.get("event_id")
+                if event_id:
+                    print(f"[protector] module result event: {event_id}")
+                    return str(event_id)
+        except Exception as exc:
+            print(f"[protector] module result submit failed: {exc}")
+        return None
 
     def check_for_update(self, apply: bool = False) -> bool:
         print(f"[update] current version: {CURRENT_VERSION}")
@@ -631,6 +688,72 @@ class HXTerminal:
         return False
 
 
+
+    def run_sql_injection_module(self, start_url: str) -> bool:
+        base_url = normalize_base_url(start_url)
+        assert_allowed_target(base_url)
+        print(f"[module:sqli] target: {base_url}")
+        print("[module:sqli] testing realistic Users service search endpoint...")
+        start_event_count = len(self.protector_event_ids)
+        page_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", "vulnerabilities/sql-injection")
+        endpoint = "/api/users/search"
+        endpoint_url = urllib.parse.urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
+        page = self.request(page_url)
+        normal = self.request(endpoint_url + "?" + urllib.parse.urlencode({"q": "alice.hx"}))
+        syntax = self.request(endpoint_url + "?" + urllib.parse.urlencode({"q": "'"}))
+        payload = "' OR 1=1 -- "
+        injected = self.request(endpoint_url + "?" + urllib.parse.urlencode({"q": payload}))
+        evidence = []
+        result = "INCONCLUSIVE"
+        db_confirmed = "No"
+        sensitive = "No"
+        severity = "High"
+        normal_count = 0
+        injected_count = 0
+        admin_exposed = False
+        try:
+            normal_json = json.loads(normal.text)
+            injected_json = json.loads(injected.text)
+            normal_count = int(normal_json.get("count", 0))
+            injected_count = int(injected_json.get("count", 0))
+            users = injected_json.get("users", []) or []
+            admin_exposed = any(u.get("role") in {"admin", "security", "finance", "service"} or u.get("status") in {"disabled", "locked"} for u in users)
+            if injected.status == 200 and injected_count > normal_count and admin_exposed:
+                result = "VULNERABLE"
+                db_confirmed = "Yes"
+                sensitive = "Yes"
+            elif injected.status in {403, 429}:
+                result = "PROTECTED"
+            evidence.append(f"baseline query returned {normal_count} user(s)")
+            evidence.append(f"SQLi payload returned {injected_count} user(s)")
+            if admin_exposed:
+                evidence.append("synthetic privileged/disabled users were exposed")
+        except Exception as exc:
+            evidence.append(f"response parse failed: {exc}")
+        if syntax.status == 400:
+            db_confirmed = "Yes"
+            evidence.append("single-quote probe produced controlled SQL query_error")
+        protector_events = self.protector_event_ids[start_event_count:]
+        report = {
+            "module": "SQL Injection",
+            "vulnerability": "SQL Injection",
+            "affectedEndpoint": endpoint,
+            "severity": severity,
+            "technique": "SQL Injection",
+            "databaseInteractionConfirmed": db_confirmed,
+            "sensitiveTestDataExposed": sensitive,
+            "responseStatus": f"baseline={normal.status}, syntax={syntax.status}, injected={injected.status}",
+            "protectorEvents": protector_events[-10:],
+            "evidence": evidence,
+            "result": result,
+        }
+        event_id = self.submit_module_result(base_url, report)
+        if event_id:
+            report["protectorEvents"] = (report.get("protectorEvents") or []) + [event_id]
+        self.print_security_report(report)
+        return result == "VULNERABLE"
+
+
 def is_generic_block(res: HttpResult) -> bool:
     text = res.text[:6000]
     if res.status == 403 and "cloudflare" in text.lower() and "attention required" in text.lower():
@@ -768,9 +891,10 @@ def admin_menu() -> None:
         print("2) Auto-run HXSecurity Test 2")
         print("3) Auto-run HXSecurity Test 3")
         print("4) Auto-run HXSecurity Test 4")
-        print("5) Auto-run HXSecurity Test 5")
-        print("6) Check/install terminal update")
-        print("7) Show registered tests")
+        print("5) Broken Access Control / IDOR / BOLA")
+        print("6) SQL Injection")
+        print("7) Check/install terminal update")
+        print("8) Show vulnerability modules")
         print("0) Exit")
         choice = input("hxsecurity> ").strip()
         if choice == "1":
@@ -794,14 +918,16 @@ def admin_menu() -> None:
             ok = term.run_test5_auto(url)
             print("[result] PASS" if ok else "[result] FAIL")
         elif choice == "6":
-            term.check_for_update(apply=True)
+            url = input("Start URL/domain: ").strip() or "https://lab.hxsecurity.net/vulnerabilities/sql-injection"
+            ok = term.run_sql_injection_module(url)
+            print("[result] VULNERABLE" if ok else "[result] NOT VULNERABLE / INCONCLUSIVE")
         elif choice == "7":
-            print("Registered tests:")
-            print("- test1: exposed backup/config artifact with Base64 credential, admin login validation")
-            print("- test2: chained robots/header/manifest clue with Base64 credential, admin login validation")
-            print("- test3: chained security/header/runbook/manifest clue with Base64 credential, admin login validation")
-            print("- test4: chained sitemap/status/manifest archived-env clue with Base64 credential, admin login validation")
-            print("- test5: controlled IDOR/BOLA object enumeration with validation token")
+            term.check_for_update(apply=True)
+        elif choice == "8":
+            print("Vulnerability modules:")
+            print("- Exposed Secrets / Backup Config Disclosure")
+            print("- Broken Access Control / IDOR / BOLA")
+            print("- SQL Injection")
         elif choice == "0":
             return
         else:
